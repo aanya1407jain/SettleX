@@ -1,9 +1,6 @@
 "use client";
 
 import {
-  isConnected,
-  requestAccess,
-  getAddress,
   signTransaction as freighterSign,
 } from "@stellar/freighter-api";
 import type { Deposit } from "@/types";
@@ -18,10 +15,14 @@ const NETWORK_PASSPHRASE =
   "Test SDF Network ; September 2015";
 const CONTRACT_ID = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS || "";
 
-function getClient(publicKey?: string): Client {
+// ─── Client Factory (no global cache) ──────────────────────────────────
+// Every call creates a fresh client with the CURRENT wallet public key.
+// This avoids stale state when the user switches Freighter accounts.
+
+export function getClient(publicKey: string): Client {
   if (!CONTRACT_ID) {
     throw new Error(
-      "SettleX is not deployed. Add NEXT_PUBLIC_CONTRACT_ADDRESS to .env.local and restart the app."
+      "SettleX contract is not configured. Add NEXT_PUBLIC_CONTRACT_ADDRESS to client/.env.local and restart the server."
     );
   }
 
@@ -29,45 +30,13 @@ function getClient(publicKey?: string): Client {
     contractId: CONTRACT_ID,
     networkPassphrase: NETWORK_PASSPHRASE,
     rpcUrl: RPC_URL,
-    publicKey: publicKey || "",
-    signTransaction: async (xdr, opts) => {
-      return freighterSign(xdr, {
+    publicKey,
+    signTransaction: async (xdr, opts) =>
+      freighterSign(xdr, {
         networkPassphrase:
           opts?.networkPassphrase || NETWORK_PASSPHRASE,
-      });
-    },
+      }),
   });
-}
-
-// ─── Wallet ──────────────────────────────────────────────────────────
-
-export async function checkFreighter(): Promise<boolean> {
-  try {
-    const resp = await isConnected();
-    return resp.isConnected;
-  } catch {
-    return false;
-  }
-}
-
-export async function connectWallet(): Promise<string | null> {
-  try {
-    await requestAccess();
-    const addrResp = await getAddress();
-    return addrResp.address;
-  } catch (e) {
-    console.error("Failed to connect wallet:", e);
-    return null;
-  }
-}
-
-export async function getWalletAddress(): Promise<string | null> {
-  try {
-    const resp = await getAddress();
-    return resp.address;
-  } catch {
-    return null;
-  }
 }
 
 // ─── Type Converters ─────────────────────────────────────────────────
@@ -208,23 +177,24 @@ export async function claimRefundAfterDeadline(
 }
 
 export async function getDepositDetails(
-  depositId: bigint | string
+  depositId: bigint | string,
+  walletAddr?: string
 ): Promise<Deposit | null> {
+  if (!walletAddr) return null;
   try {
-    const client = getClient();
+    const client = getClient(walletAddr);
     const tx = await client.get_deposit_details({
       deposit_id: BigInt(depositId),
     });
-    // The result is automatically populated from simulation (simulate: true by default)
     if (tx.result === undefined) return null;
     return toLocalDeposit(tx.result as any);
-  } catch (e) {
-    console.error("Failed to get deposit details:", e);
+  } catch {
+    // Deposit doesn't exist or RPC error — return null silently
     return null;
   }
 }
 
-// ─── Explorer Links ──────────────────────────────────────────────────
+// ─── Explorer & Clipboard Helpers ─────────────────────────────────────
 
 export function getExplorerTxUrl(hash: string): string {
   return `https://stellar.expert/explorer/testnet/tx/${hash}`;
@@ -232,4 +202,26 @@ export function getExplorerTxUrl(hash: string): string {
 
 export function getExplorerContractUrl(contractId?: string): string {
   return `https://stellar.expert/explorer/testnet/contract/${contractId || CONTRACT_ID}`;
+}
+
+export async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // Fallback for older browsers
+    try {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+      return true;
+    } catch {
+      return false;
+    }
+  }
 }

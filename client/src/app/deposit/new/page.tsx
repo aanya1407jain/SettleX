@@ -1,19 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
-import {
-  checkFreighter,
-  connectWallet,
-  getWalletAddress,
-  createDeposit,
-} from "@/hooks/contract";
+import { createDeposit } from "@/hooks/contract";
+import { useWallet } from "@/context/WalletContext";
 import { xlmToStroops } from "@/lib/utils";
 
 export default function NewDeposit() {
   const router = useRouter();
-  const [walletAddr, setWalletAddr] = useState<string | null>(null);
-  const [connecting, setConnecting] = useState(false);
+  const { address: walletAddr, connectWallet, connecting } = useWallet();
   const [submitting, setSubmitting] = useState(false);
   const [useDemoMode, setUseDemoMode] = useState(false);
 
@@ -29,26 +24,6 @@ export default function NewDeposit() {
 
   const [error, setError] = useState("");
   const [result, setResult] = useState<{ depositId: string; txHash: string } | null>(null);
-
-  useEffect(() => {
-    (async () => {
-      const ok = await checkFreighter();
-      if (ok) {
-        const addr = await getWalletAddress();
-        if (addr) setWalletAddr(addr);
-      }
-    })();
-  }, []);
-
-  const handleConnect = async () => {
-    setConnecting(true);
-    try {
-      const addr = await connectWallet();
-      if (addr) setWalletAddr(addr);
-    } finally {
-      setConnecting(false);
-    }
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -202,7 +177,7 @@ export default function NewDeposit() {
             You need to connect your Freighter wallet to create a deposit.
           </p>
           <button
-            onClick={handleConnect}
+            onClick={connectWallet}
             disabled={connecting}
             className="px-5 py-2.5 bg-gradient-to-r from-violet-600 to-blue-500 text-white font-medium rounded-xl hover:from-violet-700 hover:to-blue-600 disabled:opacity-50 transition-all shadow-md"
           >

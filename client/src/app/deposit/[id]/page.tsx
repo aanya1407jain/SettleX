@@ -3,8 +3,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
-  checkFreighter,
-  getWalletAddress,
   getDepositDetails,
   lockDeposit,
   proposeFullRefund,
@@ -14,6 +12,7 @@ import {
   rejectPartialDeduction,
   claimRefundAfterDeadline,
 } from "@/hooks/contract";
+import { useWallet } from "@/context/WalletContext";
 import type { Deposit } from "@/types";
 import StatusBadge from "@/components/StatusBadge";
 import Timeline from "@/components/Timeline";
@@ -30,7 +29,7 @@ export default function DepositDetail() {
   const router = useRouter();
   const depositId = params.id as string;
 
-  const [walletAddr, setWalletAddr] = useState<string | null>(null);
+  const { address: walletAddr } = useWallet();
   const [deposit, setDeposit] = useState<Deposit | null>(null);
   const [txs, setTxs] = useState<{ action: string; hash: string; timestamp: number }[]>([]);
   const [loading, setLoading] = useState(true);
@@ -45,25 +44,10 @@ export default function DepositDetail() {
   const fetchDeposit = useCallback(async () => {
     if (!depositId) return;
     setLoading(true);
-    try {
-      const dep = await getDepositDetails(depositId);
-      setDeposit(dep);
-    } catch (e) {
-      console.error("Failed to fetch deposit:", e);
-    } finally {
-      setLoading(false);
-    }
-  }, [depositId]);
-
-  useEffect(() => {
-    (async () => {
-      const ok = await checkFreighter();
-      if (ok) {
-        const addr = await getWalletAddress();
-        if (addr) setWalletAddr(addr);
-      }
-    })();
-  }, []);
+    const dep = await getDepositDetails(depositId, walletAddr || undefined);
+    setDeposit(dep);
+    setLoading(false);
+  }, [depositId, walletAddr]);
 
   useEffect(() => {
     if (depositId) fetchDeposit();

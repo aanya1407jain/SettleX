@@ -2,57 +2,40 @@
 
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
-import { checkFreighter, connectWallet, getWalletAddress, getDepositDetails } from "@/hooks/contract";
+import { getDepositDetails } from "@/hooks/contract";
+import { useWallet } from "@/context/WalletContext";
 import type { Deposit } from "@/types";
 import DepositCard from "@/components/DepositCard";
 import MoneyFlow from "@/components/MoneyFlow";
 import { stroopsToXlm } from "@/lib/utils";
 
-const DEMO_DEPOSITS = [
-  { id: "1", property: "Downtown Studio Apt 3B", amount: "2000000000" },
-  { id: "2", property: "Suburb Townhouse Unit 7", amount: "3500000000" },
-];
-
 export default function Home() {
-  const [walletAddr, setWalletAddr] = useState<string | null>(null);
-  const [connecting, setConnecting] = useState(false);
+  const {
+    address: walletAddr,
+    connecting,
+    connectWallet,
+  } = useWallet();
   const [deposits, setDeposits] = useState<{ id: string; data: Deposit }[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    (async () => {
-      const ok = await checkFreighter();
-      if (ok) {
-        const addr = await getWalletAddress();
-        if (addr) {
-          setWalletAddr(addr);
-        }
-      }
-      setLoading(false);
-    })();
-  }, []);
+  const [scanning, setScanning] = useState(false);
 
   const fetchDeposits = useCallback(async () => {
     if (!walletAddr) return;
-    // Try to fetch deposits from the contract (IDs 1-10)
+    setScanning(true);
     const results: { id: string; data: Deposit }[] = [];
+    // Scan deposit IDs 1-10, quietly skipping nonexistent ones
     for (let i = 1; i <= 10; i++) {
-      try {
-        const dep = await getDepositDetails(String(i));
-        if (dep) {
-          const tLower = dep.tenant.toLowerCase();
-          const lLower = dep.landlord.toLowerCase();
-          const wLower = walletAddr.toLowerCase();
-          if (tLower === wLower || lLower === wLower) {
-            results.push({ id: String(i), data: dep });
-          }
+      const dep = await getDepositDetails(String(i), walletAddr);
+      if (dep) {
+        const tLower = dep.tenant.toLowerCase();
+        const lLower = dep.landlord.toLowerCase();
+        const wLower = walletAddr.toLowerCase();
+        if (tLower === wLower || lLower === wLower) {
+          results.push({ id: String(i), data: dep });
         }
-      } catch {
-        // No more deposits
-        break;
       }
     }
     setDeposits(results);
+    setScanning(false);
   }, [walletAddr]);
 
   useEffect(() => {
@@ -61,19 +44,9 @@ export default function Home() {
     }
   }, [walletAddr, fetchDeposits]);
 
-  const handleConnect = async () => {
-    setConnecting(true);
-    try {
-      const addr = await connectWallet();
-      if (addr) setWalletAddr(addr);
-    } finally {
-      setConnecting(false);
-    }
-  };
-
   return (
     <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12">
-      {/* Hero Section */}
+      {/* Hero Section — always visible until user connects */}
       {!walletAddr && (
         <div className="text-center mb-12 animate-fade-in-up">
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-600 to-blue-500 mb-6 shadow-lg shadow-violet-200">
@@ -90,7 +63,7 @@ export default function Home() {
             escrow layer for tenants and landlords — powered by Stellar Soroban.
           </p>
           <button
-            onClick={handleConnect}
+            onClick={connectWallet}
             disabled={connecting}
             className="inline-flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-violet-600 to-blue-500 text-white font-medium rounded-xl hover:from-violet-700 hover:to-blue-600 disabled:opacity-50 transition-all duration-200 shadow-lg shadow-violet-200 hover:shadow-xl hover:shadow-violet-300"
           >
@@ -156,6 +129,21 @@ export default function Home() {
               ))}
             </div>
           </div>
+
+          {/* Freighter not installed notice */}
+          <div className="mt-8 text-center">
+            <p className="text-xs text-slate-400">
+              Don&apos;t have Freighter?{" "}
+              <a
+                href="https://freighter.app"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-violet-600 hover:text-violet-800 underline"
+              >
+                Install the Freighter browser extension
+              </a>
+            </p>
+          </div>
         </div>
       )}
 
@@ -206,7 +194,17 @@ export default function Home() {
             <h2 className="text-lg font-semibold text-slate-900 mb-4">
               Your Deposits
             </h2>
-            {deposits.length === 0 ? (
+            {scanning ? (
+              <div className="text-center py-12 bg-white/50 rounded-2xl border border-slate-200/60">
+                <div className="flex items-center justify-center gap-2 text-slate-500">
+                  <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <span>Scanning for deposits...</span>
+                </div>
+              </div>
+            ) : deposits.length === 0 ? (
               <div className="text-center py-12 bg-white/50 rounded-2xl border border-slate-200/60 border-dashed">
                 <svg className="w-12 h-12 mx-auto text-slate-300 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
