@@ -18,23 +18,25 @@ const NETWORK_PASSPHRASE =
   "Test SDF Network ; September 2015";
 const CONTRACT_ID = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS || "";
 
-let _client: Client | null = null;
-
 function getClient(publicKey?: string): Client {
-  if (!_client) {
-    _client = new Client({
-      contractId: CONTRACT_ID,
-      networkPassphrase: NETWORK_PASSPHRASE,
-      rpcUrl: RPC_URL,
-      publicKey: publicKey || "",
-      signTransaction: async (xdr, opts) => {
-        return freighterSign(xdr, {
-          networkPassphrase: opts?.networkPassphrase || NETWORK_PASSPHRASE,
-        });
-      },
-    });
+  if (!CONTRACT_ID) {
+    throw new Error(
+      "SettleX is not deployed. Add NEXT_PUBLIC_CONTRACT_ADDRESS to .env.local and restart the app."
+    );
   }
-  return _client;
+
+  return new Client({
+    contractId: CONTRACT_ID,
+    networkPassphrase: NETWORK_PASSPHRASE,
+    rpcUrl: RPC_URL,
+    publicKey: publicKey || "",
+    signTransaction: async (xdr, opts) => {
+      return freighterSign(xdr, {
+        networkPassphrase:
+          opts?.networkPassphrase || NETWORK_PASSPHRASE,
+      });
+    },
+  });
 }
 
 // ─── Wallet ──────────────────────────────────────────────────────────
