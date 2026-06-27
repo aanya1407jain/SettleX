@@ -1,22 +1,13 @@
 "use client";
 
 import {
-  rpc,
-  TransactionBuilder,
-  Operation,
-  Transaction,
-  xdr,
-  Address,
-  scValToNative,
-} from "@stellar/stellar-sdk";
-import {
   isConnected,
   requestAccess,
   getAddress,
-  signTransaction,
+  signTransaction as freighterSign,
 } from "@stellar/freighter-api";
-
 import type { Deposit } from "@/types";
+import { Client } from "contract";
 
 // ─── Config ──────────────────────────────────────────────────────────
 const RPC_URL =
@@ -27,45 +18,23 @@ const NETWORK_PASSPHRASE =
   "Test SDF Network ; September 2015";
 const CONTRACT_ID = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS || "";
 
-// ─── ScVal Helpers ───────────────────────────────────────────────────
+let _client: Client | null = null;
 
-function strToScVal(s: string): xdr.ScVal {
-  return xdr.ScVal.scvString(s);
-}
-
-function u64ToScVal(n: bigint | string | number): xdr.ScVal {
-  const val = typeof n === "bigint" ? n : BigInt(n);
-  return xdr.ScVal.scvU64(new xdr.Uint64(val.toString()));
-}
-
-function i128ToScVal(n: bigint | string | number): xdr.ScVal {
-  const val = typeof n === "bigint" ? n : BigInt(n);
-  const abs = val < 0n ? -val : val;
-  const lo = abs & 0xffffffffffffffffn;
-  const hi = abs >> 64n;
-  const hiVal = val < 0n ? -BigInt(hi > 0n ? hi.toString() : "0") : hi;
-  return xdr.ScVal.scvI128(
-    new xdr.Int128Parts({
-      lo: new xdr.Uint64(lo.toString()),
-      hi: new xdr.Uint64(hiVal > 0n ? hiVal.toString() : "0"),
-    })
-  );
-}
-
-function addressToScVal(addr: string): xdr.ScVal {
-  return new Address(addr).toScVal();
-}
-
-function getServer(): rpc.Server {
-  return new rpc.Server(RPC_URL);
-}
-
-function buildContractOp(method: string, args: xdr.ScVal[]): xdr.Operation {
-  return Operation.invokeContractFunction({
-    contract: CONTRACT_ID,
-    function: method,
-    args: args,
-  });
+function getClient(publicKey?: string): Client {
+  if (!_client) {
+    _client = new Client({
+      contractId: CONTRACT_ID,
+      networkPassphrase: NETWORK_PASSPHRASE,
+      rpcUrl: RPC_URL,
+      publicKey: publicKey || "",
+      signTransaction: async (xdr, opts) => {
+        return freighterSign(xdr, {
+          networkPassphrase: opts?.networkPassphrase || NETWORK_PASSPHRASE,
+        });
+      },
+    });
+  }
+  return _client;
 }
 
 // ─── Wallet ──────────────────────────────────────────────────────────
@@ -99,139 +68,29 @@ export async function getWalletAddress(): Promise<string | null> {
   }
 }
 
-// ─── Contract Call Helpers ───────────────────────────────────────────
+// ─── Type Converters ─────────────────────────────────────────────────
 
-async function simulateContractCall(
-  method: string,
-  args: xdr.ScVal[],
-  source?: string
-): Promise<any> {
-  const server = getServer();
-  const op = buildContractOp(method, args);
-
-  const sourceAccount = source
-    ? await server.getAccount(source)
-    : await server.getAccount(
-        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
-      );
-
-  const tx = new TransactionBuilder(sourceAccount, {
-    fee: "100",
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(op)
-    .setTimeout(30)
-    .build();
-
-  const sim = await server.simulateTransaction(tx);
-
-  if ("error" in sim && sim.error) {
-    throw new Error(`Contract simulation failed: ${sim.error}`);
-  }
-
-  if ("result" in sim && sim.result && "retval" in sim.result) {
-    return sim.result.retval;
-  }
-
-  return null;
-}
-
-async function buildSignAndSend(
-  method: string,
-  args: xdr.ScVal[],
-  walletAddr: string
-): Promise<string> {
-  const server = getServer();
-  const op = buildContractOp(method, args);
-
-  const source = await server.getAccount(walletAddr);
-
-  const tx = new TransactionBuilder(source, {
-    fee: "100",
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(op)
-    .setTimeout(30)
-    .build();
-
-  const sim = await server.simulateTransaction(tx);
-  if ("error" in sim && sim.error) {
-    throw new Error(`Simulation failed: ${sim.error}`);
-  }
-
-  const prepared = rpc.assembleTransaction(tx, sim).build();
-
-  const signedXdrResp = await signTransaction(prepared.toXDR(), {
-    networkPassphrase: NETWORK_PASSPHRASE,
-  });
-
-  const signedTx = TransactionBuilder.fromXDR(
-    (signedXdrResp as any).signedTxXdr || signedXdrResp,
-    NETWORK_PASSPHRASE
-  ) as Transaction;
-
-  const sendResult = await server.sendTransaction(signedTx);
-
-  if (sendResult.status === "PENDING" || sendResult.status === "DUPLICATE") {
-    const hash = (sendResult as any).hash || "";
-
-    for (let i = 0; i < 30; i++) {
-      await new Promise((r) => setTimeout(r, 2000));
-      try {
-        const txResult = await server.getTransaction(hash);
-        if (txResult.status === "SUCCESS") {
-          return hash;
-        }
-        if (txResult.status === "FAILED") {
-          throw new Error(`Transaction failed: ${JSON.stringify(txResult)}`);
-        }
-      } catch (e: any) {
-        if (e.message?.includes("not found")) continue;
-        throw e;
-      }
-    }
-    throw new Error("Transaction timeout");
-  }
-
-  if (sendResult.status === "ERROR") {
-    throw new Error(`Transaction failed: ${JSON.stringify(sendResult)}`);
-  }
-
-  return (sendResult as any).hash || "unknown";
-}
-
-function parseDeposit(raw: any): Deposit {
-  const fields = raw as Record<string, any>;
-
-  const get = (key: string): string => {
-    const val = fields[key];
-    if (val === undefined || val === null) return "";
-    try {
-      const native = scValToNative(val);
-      return native === null || native === undefined ? "" : String(native);
-    } catch {
-      return String(val);
-    }
-  };
-
+function toLocalDeposit(raw: {
+  amount: bigint | string | number;
+  deduction_amount: bigint | string | number;
+  deduction_reason: string;
+  landlord: string;
+  property_reference: string;
+  rental_end_date: bigint | string | number;
+  review_period: bigint | string | number;
+  status: number;
+  tenant: string;
+}): Deposit {
   return {
-    tenant: get("tenant"),
-    landlord: get("landlord"),
-    amount: get("amount"),
-    rental_end_date: get("rental_end_date"),
-    review_period: get("review_period"),
-    property_reference: get("property_reference"),
-    status: (() => {
-      try {
-        const s = fields["status"];
-        if (!s) return 0;
-        return Number(scValToNative(s));
-      } catch {
-        return 0;
-      }
-    })(),
-    deduction_amount: get("deduction_amount"),
-    deduction_reason: get("deduction_reason"),
+    tenant: raw.tenant,
+    landlord: raw.landlord,
+    amount: String(raw.amount),
+    rental_end_date: String(raw.rental_end_date),
+    review_period: String(raw.review_period),
+    property_reference: raw.property_reference,
+    status: Number(raw.status),
+    deduction_amount: String(raw.deduction_amount),
+    deduction_reason: raw.deduction_reason,
   };
 }
 
@@ -245,27 +104,18 @@ export async function createDeposit(
   reviewPeriod: bigint | string,
   propertyReference: string
 ): Promise<{ depositId: string; txHash: string }> {
-  const args = [
-    addressToScVal(tenant),
-    addressToScVal(landlord),
-    i128ToScVal(amountStroops),
-    u64ToScVal(rentalEndDate),
-    u64ToScVal(reviewPeriod),
-    strToScVal(propertyReference),
-  ];
-  const txHash = await buildSignAndSend("create_deposit", args, tenant);
-
-  let depositId = "1";
-  try {
-    const retval = await simulateContractCall("create_deposit", args, tenant);
-    if (retval) {
-      const native = scValToNative(retval);
-      depositId = String(native);
-    }
-  } catch {
-    depositId = "1";
-  }
-
+  const client = getClient(tenant);
+  const tx = await client.create_deposit({
+    tenant,
+    landlord,
+    amount: BigInt(amountStroops),
+    rental_end_date: BigInt(rentalEndDate),
+    review_period: BigInt(reviewPeriod),
+    property_reference: propertyReference,
+  });
+  const sent = await tx.signAndSend();
+  const depositId = String(sent.result ?? 1);
+  const txHash = sent.sendTransactionResponse?.hash || "";
   return { depositId, txHash };
 }
 
@@ -273,14 +123,22 @@ export async function lockDeposit(
   walletAddr: string,
   depositId: bigint | string
 ): Promise<string> {
-  return await buildSignAndSend("lock_deposit", [u64ToScVal(depositId)], walletAddr);
+  const client = getClient(walletAddr);
+  const tx = await client.lock_deposit({ deposit_id: BigInt(depositId) });
+  const sent = await tx.signAndSend();
+  return sent.sendTransactionResponse?.hash || "";
 }
 
 export async function proposeFullRefund(
   walletAddr: string,
   depositId: bigint | string
 ): Promise<string> {
-  return await buildSignAndSend("propose_full_refund", [u64ToScVal(depositId)], walletAddr);
+  const client = getClient(walletAddr);
+  const tx = await client.propose_full_refund({
+    deposit_id: BigInt(depositId),
+  });
+  const sent = await tx.signAndSend();
+  return sent.sendTransactionResponse?.hash || "";
 }
 
 export async function proposePartialDeduction(
@@ -289,49 +147,75 @@ export async function proposePartialDeduction(
   deductionAmount: bigint | string,
   reason: string
 ): Promise<string> {
-  return await buildSignAndSend(
-    "propose_partial_deduction",
-    [u64ToScVal(depositId), i128ToScVal(deductionAmount), strToScVal(reason)],
-    walletAddr
-  );
+  const client = getClient(walletAddr);
+  const tx = await client.propose_partial_deduction({
+    deposit_id: BigInt(depositId),
+    deduction_amount: BigInt(deductionAmount),
+    reason,
+  });
+  const sent = await tx.signAndSend();
+  return sent.sendTransactionResponse?.hash || "";
 }
 
 export async function acceptFullRefund(
   walletAddr: string,
   depositId: bigint | string
 ): Promise<string> {
-  return await buildSignAndSend("accept_full_refund", [u64ToScVal(depositId)], walletAddr);
+  const client = getClient(walletAddr);
+  const tx = await client.accept_full_refund({
+    deposit_id: BigInt(depositId),
+  });
+  const sent = await tx.signAndSend();
+  return sent.sendTransactionResponse?.hash || "";
 }
 
 export async function acceptPartialDeduction(
   walletAddr: string,
   depositId: bigint | string
 ): Promise<string> {
-  return await buildSignAndSend("accept_partial_deduction", [u64ToScVal(depositId)], walletAddr);
+  const client = getClient(walletAddr);
+  const tx = await client.accept_partial_deduction({
+    deposit_id: BigInt(depositId),
+  });
+  const sent = await tx.signAndSend();
+  return sent.sendTransactionResponse?.hash || "";
 }
 
 export async function rejectPartialDeduction(
   walletAddr: string,
   depositId: bigint | string
 ): Promise<string> {
-  return await buildSignAndSend("reject_partial_deduction", [u64ToScVal(depositId)], walletAddr);
+  const client = getClient(walletAddr);
+  const tx = await client.reject_partial_deduction({
+    deposit_id: BigInt(depositId),
+  });
+  const sent = await tx.signAndSend();
+  return sent.sendTransactionResponse?.hash || "";
 }
 
 export async function claimRefundAfterDeadline(
   walletAddr: string,
   depositId: bigint | string
 ): Promise<string> {
-  return await buildSignAndSend("claim_refund_after_deadline", [u64ToScVal(depositId)], walletAddr);
+  const client = getClient(walletAddr);
+  const tx = await client.claim_refund_after_deadline({
+    deposit_id: BigInt(depositId),
+  });
+  const sent = await tx.signAndSend();
+  return sent.sendTransactionResponse?.hash || "";
 }
 
 export async function getDepositDetails(
   depositId: bigint | string
 ): Promise<Deposit | null> {
   try {
-    const result = await simulateContractCall("get_deposit_details", [u64ToScVal(depositId)]);
-    if (!result) return null;
-    const raw = scValToNative(result) as Record<string, any>;
-    return parseDeposit(raw);
+    const client = getClient();
+    const tx = await client.get_deposit_details({
+      deposit_id: BigInt(depositId),
+    });
+    // The result is automatically populated from simulation (simulate: true by default)
+    if (tx.result === undefined) return null;
+    return toLocalDeposit(tx.result as any);
   } catch (e) {
     console.error("Failed to get deposit details:", e);
     return null;
